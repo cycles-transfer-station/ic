@@ -6,11 +6,11 @@ use ic_cdk::trap;
 use ic_cdk_macros::{init, post_upgrade, query};
 use ic_cdk_timers::TimerId;
 use ic_crypto_sha2::Sha256;
-use ic_icrc1::blocks::{encoded_block_to_generic_block, generic_block_to_encoded_block};
+use ic_icrc1::blocks::generic_block_to_encoded_block;
 use ic_icrc1::endpoints::StandardRecord;
 use ic_icrc1::{Block, Operation};
 use ic_icrc1_index_ng::{
-    FeeCollectorRanges, GetAccountTransactionsArgs, GetAccountTransactionsResponse,
+    GetAccountTransactionsArgs, GetAccountTransactionsResponse,
     GetAccountTransactionsResult, GetBlocksMethod, IndexArg, InitArg, ListSubaccountsArgs, Log,
     LogEntry, Status, TransactionWithId, UpgradeArg, DEFAULT_MAX_BLOCKS_PER_RESPONSE,
 };
@@ -678,6 +678,7 @@ fn set_build_index_timer(after: Duration) -> TimerId {
 
 fn append_block(block_index: BlockIndex64, block: GenericBlock) {
     measure_span(&PROFILING_DATA, "append_blocks", move || {
+        let block = generic_block_if_btype_put_op(block);
         let block = generic_block_to_encoded_block_or_trap(block_index, block);
 
         // append the encoded block to the block log
@@ -853,6 +854,26 @@ fn credit(block_index: BlockIndex64, account: Account, amount: Tokens) {
     });
 }
 
+fn generic_block_if_btype_put_op(mut generic_block: GenericBlock) -> GenericBlock {
+    const BTYPES_THAT_CAN_HAVE_TXOP: &[(&str, &str); 5] = &[
+        ("1burn", "burn"),
+        ("1mint", "mint"),
+        ("1xfer", "xfer"),
+        ("2xfer", "xfer"),
+        ("2approve", "approve")
+    ];
+    if let GenericBlock::Map(ref mut m) = generic_block {
+        if let Some(GenericBlock::Text(btype)) = m.get("btype").cloned() {
+            if let Some(op) = BTYPES_THAT_CAN_HAVE_TXOP.iter().find(|t| t.0 == btype).map(|t| t.1) {
+                if let Some(GenericBlock::Map(txm)) = m.get_mut("tx") {
+                    txm.insert("op".to_string(), GenericBlock::Text(op.to_string())).ok_or(()).unwrap_err();
+                }
+            }
+        }
+    }
+    generic_block
+}
+
 fn generic_block_to_encoded_block_or_trap(
     block_index: BlockIndex64,
     block: GenericBlock,
@@ -910,35 +931,9 @@ fn account_block_ids_key(account: Account, block_index: BlockIndex64) -> Account
     (account_sha256(account), Reverse(block_index))
 }
 
-fn decode_icrc1_block(_txid: u64, bytes: Vec<u8>) -> GenericBlock {
-    let encoded_block = EncodedBlock::from(bytes);
-    encoded_block_to_generic_block(&encoded_block)
-}
 
-#[query]
-#[candid_method(query)]
-fn get_blocks(req: GetBlocksRequest) -> ic_icrc1_index_ng::GetBlocksResponse {
-    let chain_length = with_blocks(|blocks| blocks.len());
-    let (start, length) = req
-        .as_start_and_length()
-        .unwrap_or_else(|msg| ic_cdk::api::trap(&msg));
+// Delete the get_blocks method. Clients must use the icrc3_get_blocks method on the ledger.
 
-    let blocks = decode_block_range(start, length, decode_icrc1_block);
-    ic_icrc1_index_ng::GetBlocksResponse {
-        chain_length,
-        blocks,
-    }
-}
-
-fn decode_block_range<R>(start: u64, length: u64, decoder: impl Fn(u64, Vec<u8>) -> R) -> Vec<R> {
-    let length = length.min(with_state(|opts| opts.max_blocks_per_response));
-    with_blocks(|blocks| {
-        let limit = blocks.len().min(start.saturating_add(length));
-        (start..limit)
-            .map(|i| decoder(start + i, blocks.get(i).unwrap()))
-            .collect()
-    })
-}
 
 #[query]
 #[candid_method(query)]
@@ -1152,22 +1147,7 @@ pub fn encode_metrics(w: &mut ic_metrics_encoder::MetricsEncoder<Vec<u8>>) -> st
     Ok(())
 }
 
-#[candid_method(query)]
-#[query]
-fn get_fee_collectors_ranges() -> FeeCollectorRanges {
-    let ranges = with_state(|s| {
-        let mut res = vec![];
-        for (fee_collector, ranges) in &s.fee_collectors {
-            let mut fee_collector_ranges = vec![];
-            for range in ranges {
-                fee_collector_ranges.push((range.start.into(), range.end.into()));
-            }
-            res.push((*fee_collector, fee_collector_ranges))
-        }
-        res
-    });
-    FeeCollectorRanges { ranges }
-}
+// Delete the get_fee_collectors_ranges method bc the CTS-CYCLES-BANK burns it's fees.
 
 fn main() {}
 
