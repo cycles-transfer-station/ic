@@ -678,6 +678,7 @@ fn set_build_index_timer(after: Duration) -> TimerId {
 
 fn append_block(block_index: BlockIndex64, block: GenericBlock) {
     measure_span(&PROFILING_DATA, "append_blocks", move || {
+        let block = generic_block_if_btype_put_op(block);
         let block = generic_block_to_encoded_block_or_trap(block_index, block);
 
         // append the encoded block to the block log
@@ -853,6 +854,26 @@ fn credit(block_index: BlockIndex64, account: Account, amount: Tokens) {
     });
 }
 
+fn generic_block_if_btype_put_op(mut generic_block: GenericBlock) -> GenericBlock {
+    const BTYPES_THAT_CAN_HAVE_TXOP: &[(&str, &str); 5] = &[
+        ("1burn", "burn"),
+        ("1mint", "mint"),
+        ("1xfer", "xfer"),
+        ("2xfer", "xfer"),
+        ("2approve", "approve")
+    ];
+    if let GenericBlock::Map(ref mut m) = generic_block {
+        if let Some(GenericBlock::Text(btype)) = m.get("btype").cloned() {
+            if let Some(op) = BTYPES_THAT_CAN_HAVE_TXOP.iter().find(|t| t.0 == btype).map(|t| t.1) {
+                if let Some(GenericBlock::Map(txm)) = m.get_mut("tx") {
+                    txm.insert("op".to_string(), GenericBlock::Text(op.to_string())).ok_or(()).unwrap_err();
+                }
+            }
+        }
+    }
+    generic_block
+}
+
 fn generic_block_to_encoded_block_or_trap(
     block_index: BlockIndex64,
     block: GenericBlock,
@@ -914,6 +935,8 @@ fn decode_icrc1_block(_txid: u64, bytes: Vec<u8>) -> GenericBlock {
     let encoded_block = EncodedBlock::from(bytes);
     encoded_block_to_generic_block(&encoded_block)
 }
+
+// Delete the get_blocks method. Clients must use the icrc3_get_blocks method on the ledger.
 
 #[query]
 #[candid_method(query)]
@@ -1151,6 +1174,8 @@ pub fn encode_metrics(w: &mut ic_metrics_encoder::MetricsEncoder<Vec<u8>>) -> st
     })?;
     Ok(())
 }
+
+// Delete the get_fee_collectors_ranges method bc the CTS-CYCLES-BANK burns it's fees.
 
 #[candid_method(query)]
 #[query]
